@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CoBrowse - Real-Time Co-Browsing & Chat</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --night-violet: #170a2c;
+      --cosmic-purple: #3d195a;
+      --sunset-pink: #db7cb7;
+      --glass-bg: #221338ad;
+      --glass-border: rgba(219, 124, 183, 0.18);
+      --text: #f5edf7;
+      --text-muted: #c4a8d4;
+      --neon-pink: #e891d0;
+      --neon-violet: #b48cf0;
+      --neon-glow: 0 0 20px rgba(219, 124, 183, 0.45), 0 0 40px rgba(180, 140, 240, 0.25);
+      --glass-glow: 0 0 30px rgba(180, 140, 240, 0.15), 0 0 60px rgba(219, 124, 183, 0.1);
+    }
+
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: linear-gradient(180deg, #170a2c 0%, #3d195a 50%, #db7cb7 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text);
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Twinkling Stars */
+    .stars-layer {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .star {
+      position: absolute;
+      width: 2px;
+      height: 2px;
+      background: #fff;
+      border-radius: 50%;
+      opacity: 0;
+      animation: twinkle var(--duration, 3s) ease-in-out infinite;
+      animation-delay: var(--delay, 0s);
+    }
+
+    .star.large { width: 3px; height: 3px; }
+    .star.tiny { width: 1px; height: 1px; }
+
+    @keyframes twinkle {
+      0%, 100% { opacity: 0; transform: scale(0.5); }
+      50% { opacity: var(--max-opacity, 0.9); transform: scale(1); }
+    }
+
+    /* Glowing Clouds */
+    .cloud {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(60px);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .cloud-1 {
+      top: -80px; right: -60px;
+      width: 350px; height: 250px;
+      background: radial-gradient(circle, rgba(180, 140, 240, 0.12), transparent 65%);
+      animation: drift 14s ease-in-out infinite;
+    }
+
+    .cloud-2 {
+      bottom: 60px; left: -80px;
+      width: 300px; height: 200px;
+      background: radial-gradient(circle, rgba(219, 124, 183, 0.15), transparent 65%);
+      animation: drift 18s ease-in-out infinite reverse;
+      animation-delay: -6s;
+    }
+
+    .cloud-3 {
+      top: 40%; left: 55%;
+      width: 280px; height: 180px;
+      background: radial-gradient(circle, rgba(160, 120, 220, 0.08), transparent 65%);
+      animation: drift 22s ease-in-out infinite;
+      animation-delay: -10s;
+    }
+
+    @keyframes drift {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      33% { transform: translate(40px, 20px) scale(1.05); }
+      66% { transform: translate(-20px, 30px) scale(0.95); }
+    }
+
+    .container {
+      position: relative;
+      z-index: 2;
+      text-align: center;
+      padding: 2rem;
+      max-width: 560px;
+      width: 100%;
+    }
+
+    /* Logo */
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 2.5rem;
+    }
+
+    .logo-icon {
+      width: 56px;
+      height: 56px;
+      background: linear-gradient(135deg, rgba(180, 140, 240, 0.3), rgba(219, 124, 183, 0.3));
+      border: 1px solid rgba(219, 124, 183, 0.25);
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 24px rgba(180, 140, 240, 0.2);
+      backdrop-filter: blur(10px);
+    }
+
+    .logo-icon svg { width: 30px; height: 30px; fill: var(--neon-pink); }
+
+    .logo-text {
+      font-size: 1.8rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: var(--text);
+      text-shadow: 0 0 20px rgba(219, 124, 183, 0.3);
+    }
+
+    /* Hero - Glassmorphism Container */
+    .hero {
+      background: var(--glass-bg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      padding: 3rem 2.5rem;
+      box-shadow: var(--glass-glow);
+      animation: slideUp 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(24px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .hero h1 {
+      font-size: 2.2rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      letter-spacing: -1px;
+      line-height: 1.2;
+      color: var(--text);
+    }
+
+    .hero p {
+      font-size: 1.05rem;
+      color: var(--text-muted);
+      margin-bottom: 2rem;
+      line-height: 1.6;
+    }
+
+    /* Features */
+    .features {
+      display: flex;
+      gap: 1.5rem;
+      margin-bottom: 2.5rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .feature {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .feature svg {
+      width: 20px;
+      height: 20px;
+      color: var(--neon-pink);
+      filter: drop-shadow(0 0 6px rgba(219, 124, 183, 0.4));
+    }
+
+    /* Generate Button - Neon Pastel */
+    .generate-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: linear-gradient(135deg, rgba(180, 140, 240, 0.2), rgba(219, 124, 183, 0.2));
+      border: 1px solid rgba(219, 124, 183, 0.35);
+      color: var(--text);
+      font-size: 1.1rem;
+      font-weight: 600;
+      padding: 16px 40px;
+      border-radius: 14px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+      box-shadow: 0 4px 24px rgba(180, 140, 240, 0.12);
+      backdrop-filter: blur(6px);
+    }
+
+    .generate-btn:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--neon-glow);
+      border-color: var(--neon-pink);
+      background: linear-gradient(135deg, rgba(219, 124, 183, 0.35), rgba(180, 140, 240, 0.3));
+      color: #fff;
+    }
+
+    .generate-btn:active { transform: translateY(-1px); }
+    .generate-btn svg { width: 22px; height: 22px; }
+    .generate-btn.loading { opacity: 0.6; pointer-events: none; }
+
+    /* Join Section */
+    .join-section {
+      margin-top: 2rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid rgba(219, 124, 183, 0.12);
+    }
+
+    .join-section label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .join-row {
+      display: flex;
+      gap: 8px;
+      max-width: 320px;
+      margin: 0 auto;
+    }
+
+    .join-row input {
+      flex: 1;
+      padding: 12px 16px;
+      border: 1px solid rgba(219, 124, 183, 0.2);
+      border-radius: 12px;
+      font-size: 1rem;
+      font-family: inherit;
+      outline: none;
+      transition: all 0.3s;
+      text-transform: uppercase;
+      background: rgba(23, 10, 44, 0.5);
+      color: var(--text);
+      backdrop-filter: blur(4px);
+    }
+
+    .join-row input::placeholder { color: rgba(196, 168, 212, 0.5); }
+
+    .join-row input:focus {
+      border-color: var(--neon-pink);
+      box-shadow: 0 0 16px rgba(219, 124, 183, 0.2);
+    }
+
+    .join-btn {
+      padding: 12px 24px;
+      background: transparent;
+      border: 1px solid rgba(219, 124, 183, 0.35);
+      color: var(--neon-pink);
+      border-radius: 12px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.3s;
+    }
+
+    .join-btn:hover {
+      background: rgba(219, 124, 183, 0.15);
+      box-shadow: 0 0 16px rgba(219, 124, 183, 0.3);
+      color: #fff;
+      border-color: var(--neon-pink);
+    }
+
+    .footer {
+      margin-top: 2rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      opacity: 0.6;
+    }
+
+    @media (max-width: 640px) {
+      .hero { padding: 2rem 1.5rem; }
+      .hero h1 { font-size: 1.7rem; }
+      .features { gap: 1rem; }
+      .generate-btn { padding: 14px 32px; font-size: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="cloud cloud-1"></div>
+  <div class="cloud cloud-2"></div>
+  <div class="cloud cloud-3"></div>
+  <div class="stars-layer" id="starsLayer"></div>
+
+  <div class="container">
+    <div class="logo">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24"><path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7l2 3 2-3h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 14H14.7l-.8 1.2L13 19.3l-.9-1.1L11.3 17H3V5h18v12z"/></svg>
+      </div>
+      <span class="logo-text">CoBrowse</span>
+    </div>
+
+    <div class="hero">
+      <h1>Browse Together. Chat Together.</h1>
+      <p>Create a room, share your screen, and co-browse the web in real time with anyone, anywhere.</p>
+
+      <div class="features">
+        <div class="feature">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.11 0-2 .89-2 2v12c0 1.1.89 2 2 2h5v2h8v-2h5c1.1 0 2-.9 2-2V5c0-1.11-.9-2-2-2zm0 14H3V5h18v12z"/></svg>
+          <span>Screen Sharing</span>
+        </div>
+        <div class="feature">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+          <span>Real-Time Chat</span>
+        </div>
+        <div class="feature">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+          <span>No Installation</span>
+        </div>
+      </div>
+
+      <button class="generate-btn" id="generateBtn" onclick="generateRoom()">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+        Create New Room
+      </button>
+
+      <div class="join-section">
+        <label>Or join an existing room</label>
+        <div class="join-row">
+          <input type="text" id="joinCode" placeholder="Enter room code" maxlength="6" onkeydown="if(event.key==='Enter')joinRoom()">
+          <button class="join-btn" onclick="joinRoom()">Join</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">Powered by WebRTC & Socket.io</div>
+  </div>
+
+  <script>
+    // Generate twinkling stars
+    (function() {
+      const layer = document.getElementById('starsLayer');
+      const count = 80;
+      for (let i = 0; i < count; i++) {
+        const star = document.createElement('div');
+        const sizeClass = Math.random() > 0.7 ? (Math.random() > 0.5 ? 'large' : 'tiny') : '';
+        star.className = 'star ' + sizeClass;
+        star.style.left = Math.random() * 100 + '%';
+        star.style.top = Math.random() * 100 + '%';
+        star.style.setProperty('--duration', (2 + Math.random() * 4) + 's');
+        star.style.setProperty('--delay', Math.random() * 5 + 's');
+        star.style.setProperty('--max-opacity', (0.4 + Math.random() * 0.5).toFixed(2));
+        layer.appendChild(star);
+      }
+    })();
+
+    function generateRoom() {
+      const btn = document.getElementById('generateBtn');
+      btn.classList.add('loading');
+      btn.innerHTML = '<span>Creating...</span>';
+      const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+      setTimeout(() => { window.location.href = '/' + code; }, 400);
+    }
+
+    function joinRoom() {
+      const code = document.getElementById('joinCode').value.trim().toUpperCase();
+      if (code) { window.location.href = '/' + code; }
+    }
+  </script>
+</body>
+</html>
