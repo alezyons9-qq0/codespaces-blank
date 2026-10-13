@@ -786,11 +786,12 @@
     async function startScreenShare() {
           try {
         // Configurăm calitatea maximă forțată la 1080p și 60 FPS
-        const displayMediaOptions = {
+                const displayMediaOptions = {
             video: {
                 width: { ideal: 1920, max: 1920 },
                 height: { ideal: 1080, max: 1080 },
-                frameRate: { ideal: 60, max: 60 },
+                // Forțăm 60 FPS ca rată ideală ȘI minimă pentru a opri limitările de baterie de pe telefon
+                frameRate: { ideal: 60, min: 60, max: 60 }, 
                 displaySurface: "browser"
             },
             audio: {
@@ -799,6 +800,7 @@
                 autoGainControl: false
             }
         };
+
 
         localStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
         isSharing = true;
