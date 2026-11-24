@@ -4,8 +4,8 @@ const quality = el('quality');
 const peers = new Map();
 const fpsControl = el('streamFps');
 const fpsProfiles = {
-  30: { hint: 'detail', preference: 'maintain-resolution', bitrate: 1800000 },
-  60: { hint: 'motion', preference: 'maintain-framerate', bitrate: 4000000 }
+  30: { hint: 'detail', preference: 'maintain-resolution', bitrate: 1500000 },
+  60: { hint: 'motion', preference: 'maintain-framerate', bitrate: 3250000 }
 };
 function selectedFps() {
   return fpsControl.value === '30' ? 30 : 60;
@@ -134,12 +134,22 @@ video.onloadedmetadata = () => video.play().catch(() => {
 el('full').onclick = async () => {
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
-    else await el('screenDisplay').requestFullscreen();
+    else await el('theater').requestFullscreen();
   } catch { el('statusText').textContent = 'Full screen unavailable'; }
 };
 document.addEventListener('fullscreenchange', () => {
-  el('full').textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen';
+  const active = document.fullscreenElement === el('theater');
+  el('full').textContent = active ? 'Exit full screen' : 'Full screen';
+  el('overlayToggle').hidden = !active;
+  setChatVisible(true);
 });
+
+function setChatVisible(visible) {
+  el('chatPanel').hidden = !visible;
+  el('overlayToggle').textContent = visible ? 'Hide chat' : 'Show chat';
+  el('overlayToggle').setAttribute('aria-expanded', String(visible));
+}
+el('overlayToggle').onclick = () => setChatVisible(el('chatPanel').hidden);
 
 function closePeer(id) {
   peers.get(id)?.pc.close();
@@ -202,7 +212,9 @@ function preferH264(pc) {
   if (!capabilities?.codecs) return;
   const h264 = capabilities.codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h264');
   if (!h264.length) return;
-  const ordered = [...h264, ...capabilities.codecs.filter(codec => !h264.includes(codec))];
+  // H.264 High and Constrained High share profile_idc 0x64.
+  const isHigh = codec => /(?:^|;)\s*profile-level-id=64[0-9a-f]{4}(?:;|$)/i.test(codec.sdpFmtpLine || '');
+  const ordered = [...h264.filter(isHigh), ...h264.filter(codec => !isHigh(codec)), ...capabilities.codecs.filter(codec => !h264.includes(codec))];
   for (const transceiver of pc.getTransceivers()) {
     if (transceiver.receiver.track.kind !== 'video') continue;
     try {
@@ -302,6 +314,7 @@ async function toggleScreenShare() {
 }
 
 function resetStream() {
+  if (document.fullscreenElement === el('theater')) document.exitFullscreen().catch(() => {});
   el('fpsBeforeShare').append(fpsControl);
   clearInterval(playbackTimer);
   isSharing = false;

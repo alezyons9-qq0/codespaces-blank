@@ -560,6 +560,29 @@
       .logo { font-size: 1rem; }
       .users-indicator { font-size: 0.8rem; }
     }
+
+    #theater:fullscreen { width: 100%; height: 100%; background: #000; }
+    #theater:fullscreen .left-panel { flex: 1; min-height: 0; }
+    #theater:fullscreen .browser-toolbar { display: none; }
+    #theater:fullscreen .screen-display { background: #000; }
+    #theater:fullscreen #playerTools {
+      top: 12px; right: 12px; bottom: auto; z-index: 51;
+    }
+    #theater:fullscreen #chatPanel {
+      position: absolute; bottom: 20px; right: 20px; z-index: 50;
+      width: min(360px, calc(100% - 40px)); min-width: 0;
+      height: min(440px, 58%); max-height: calc(100% - 100px);
+      color: white; background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+      text-shadow: 0 1px 3px #000; border: 1px solid #ffffff40;
+      border-radius: 12px; overflow: hidden;
+    }
+    #theater:fullscreen #chatPanel[hidden] { display: none; }
+    #theater:fullscreen #chatPanel .message-bubble,
+    #theater:fullscreen #chatPanel .chat-input {
+      color: white; text-shadow: inherit; min-width: 0;
+    }
+    #theater:fullscreen .chat-messages { min-height: 0; }
   </style>
 </head>
 <body>
@@ -605,7 +628,7 @@
   </div>
 
   <!-- Main Content -->
-  <div class="main-content">
+  <div class="main-content" id="theater">
     <!-- Left Panel -->
     <div class="left-panel">
       <div class="browser-area">
@@ -644,6 +667,7 @@
             <select id="quality" aria-label="Playback quality"></select>
             <button id="preview" type="button" hidden>Show preview</button>
             <button id="sound" type="button">Mute</button>
+            <button id="overlayToggle" type="button" aria-controls="chatPanel" aria-expanded="true" hidden>Hide chat</button>
             <button id="full" type="button">Full screen</button>
           </div>
           <div class="screen-placeholder" id="screenPlaceholder">
@@ -657,7 +681,7 @@
     </div>
 
     <!-- Right Panel: Chat -->
-    <div class="right-panel">
+    <div class="right-panel" id="chatPanel">
       <div class="chat-header">
         <h3>
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
