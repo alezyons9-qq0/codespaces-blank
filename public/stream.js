@@ -5,7 +5,7 @@ const peers = new Map();
 const fpsControl = el('streamFps');
 const fpsProfiles = {
   30: { hint: 'detail', preference: 'maintain-resolution', bitrate: 1500000 },
-  60: { hint: 'motion', preference: 'maintain-framerate', bitrate: 3250000 }
+  60: { hint: 'motion', preference: 'maintain-framerate', bitrate: 6000000 }
 };
 function selectedFps() {
   return fpsControl.value === '30' ? 30 : 60;
@@ -58,21 +58,16 @@ function syncCapture() {
 
 function sendViewerLimit() {
   if (isHost || !peers.size || !video.srcObject) return;
-  const displayHeight = el('screenDisplay').clientHeight;
-  const value = quality.value === 'auto'
-    ? heights.slice().reverse().find(h => h >= displayHeight) || 0
-    : Number(quality.value);
+  // Auto lets WebRTC adapt to the connection without coupling encoding to CSS size.
+  const value = quality.value === 'auto' ? 0 : Number(quality.value);
   if (value === lastViewerLimit) return;
   lastViewerLimit = value;
   for (const peer of peers.values()) socket.emit('quality', { to: peer.to, session: peer.session, value });
 }
-if (typeof ResizeObserver !== 'undefined') {
-  new ResizeObserver(sendViewerLimit).observe(el('screenDisplay'));
-}
 
 function showStream(stream, host, height) {
   sourceHeight = height;
-  quality.replaceChildren(new Option('Auto', 'auto'), new Option('Maximum', '0'));
+  quality.replaceChildren(new Option('Maximum', '0'), new Option('Auto', 'auto'));
   for (const h of heights.filter(h => h < height)) quality.add(new Option(h + 'p', h));
   quality.setAttribute('aria-label', host ? 'Broadcast quality limit' : 'Playback quality');
   quality.title = quality.getAttribute('aria-label');
@@ -137,11 +132,28 @@ el('full').onclick = async () => {
     else await el('theater').requestFullscreen();
   } catch { el('statusText').textContent = 'Full screen unavailable'; }
 };
+const theater = el('theater');
+let overlayTimer;
+function revealOverlay() {
+  if (document.fullscreenElement !== theater) return;
+  theater.classList.remove('overlay-idle');
+  clearTimeout(overlayTimer);
+  overlayTimer = setTimeout(() => theater.classList.add('overlay-idle'), 5500);
+}
+for (const event of ['pointermove', 'pointerdown', 'keydown', 'input', 'focusin', 'wheel']) {
+  theater.addEventListener(event, revealOverlay, { passive: true });
+}
+socket.on('chat-message', revealOverlay);
+socket.on('receive-voice', revealOverlay);
+
 document.addEventListener('fullscreenchange', () => {
   const active = document.fullscreenElement === el('theater');
   el('full').textContent = active ? 'Exit full screen' : 'Full screen';
   el('overlayToggle').hidden = !active;
+  clearTimeout(overlayTimer);
+  theater.classList.remove('overlay-idle');
   setChatVisible(true);
+  if (active) revealOverlay();
 });
 
 function setChatVisible(visible) {
@@ -212,9 +224,8 @@ function preferH264(pc) {
   if (!capabilities?.codecs) return;
   const h264 = capabilities.codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h264');
   if (!h264.length) return;
-  // H.264 High and Constrained High share profile_idc 0x64.
-  const isHigh = codec => /(?:^|;)\s*profile-level-id=64[0-9a-f]{4}(?:;|$)/i.test(codec.sdpFmtpLine || '');
-  const ordered = [...h264.filter(isHigh), ...h264.filter(codec => !isHigh(codec)), ...capabilities.codecs.filter(codec => !h264.includes(codec))];
+  // Preserve the browser's order among the H.264 profiles it supports.
+  const ordered = [...h264, ...capabilities.codecs.filter(codec => !h264.includes(codec))];
   for (const transceiver of pc.getTransceivers()) {
     if (transceiver.receiver.track.kind !== 'video') continue;
     try {
