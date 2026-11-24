@@ -17,7 +17,6 @@ let broadcastLimit = 0;
 let captureUpdates = Promise.resolve();
 let appliedProfile = '';
 let lastViewerLimit = null;
-let viewerAutoHeight = 0;
 
 function setPreview(enabled) {
   video.srcObject = enabled ? localStream : null;
@@ -45,7 +44,10 @@ function syncCapture() {
     try {
       if ('contentHint' in track) track.contentHint = fpsProfiles[fps].hint;
       const constraints = { frameRate: { ideal: fps, max: fps } };
-      if (target) constraints.height = { max: Math.min(target, sourceHeight || target) };
+      if (target) {
+        const height = Math.min(target, sourceHeight || target);
+        constraints.height = { ideal: height, max: height };
+      }
       await track.applyConstraints(constraints);
       if (track !== localStream?.getVideoTracks()[0]) return;
       appliedProfile = profile;
@@ -59,7 +61,7 @@ function syncCapture() {
 
 function sendViewerLimit() {
   if (isHost || !peers.size || !video.srcObject) return;
-  const value = quality.value === 'auto' ? viewerAutoHeight : Number(quality.value);
+  const value = quality.value === 'auto' ? 0 : Number(quality.value);
   if (value === lastViewerLimit) return;
   lastViewerLimit = value;
   for (const peer of peers.values()) socket.emit('quality', { to: peer.to, session: peer.session, value });
@@ -68,7 +70,7 @@ function sendViewerLimit() {
 function showStream(stream, host, height) {
   sourceHeight = height;
   quality.replaceChildren(new Option('Auto', 'auto'), new Option('Maximum', '0'));
-  for (const h of heights.filter(h => h < height)) quality.add(new Option(h + 'p', h));
+  for (const h of heights.filter(h => h <= height)) quality.add(new Option(h + 'p', h));
   quality.setAttribute('aria-label', host ? 'Broadcast quality limit' : 'Playback quality');
   quality.title = quality.getAttribute('aria-label');
   video.muted = host;
@@ -80,11 +82,6 @@ function showStream(stream, host, height) {
   } else {
     video.srcObject = stream;
     video.classList.add('active');
-    // Size Auto once. Entering fullscreen must not renegotiate the stream.
-    const displayHeight = el('screenDisplay').clientHeight;
-    viewerAutoHeight = displayHeight > 0
-      ? heights.slice().reverse().find(h => h >= displayHeight) || 0
-      : 0;
     lastViewerLimit = null;
     sendViewerLimit();
     startPlaybackMeter();
@@ -110,7 +107,7 @@ function startPlaybackMeter() {
     const time = performance.now();
     if (previous && frames >= previous.frames && video.videoHeight && !document.hidden) {
       const fps = Math.round((frames - previous.frames) * 1000 / (time - previous.time));
-      el('actualSize').textContent = video.videoHeight + 'p · ' + fps + ' fps';
+      el('actualSize').textContent = 'Playing ' + video.videoHeight + 'p · ' + fps + ' fps';
     }
     previous = document.hidden ? null : { frames, time };
   }, 1000);
@@ -199,7 +196,7 @@ function updateQuality(peer) {
     const encoding = {
       scaleResolutionDownBy: Math.max(1, height / limit),
       maxFramerate: fps,
-      maxBitrate: fpsProfiles[fps].bitrate
+      maxBitrate: fps === 60 && limit >= 1080 && Number(quality.value) > 0 ? 6000000 : fpsProfiles[fps].bitrate
     };
     Object.assign(params.encodings[0], encoding);
     params.degradationPreference = fpsProfiles[fps].preference;
@@ -211,7 +208,7 @@ function updateQuality(peer) {
       Object.assign(fallback.encodings[0], encoding);
       await peer.sender.setParameters(fallback);
     }
-    socket.emit('quality-result', { to: peer.to, session: peer.session, ok: true });
+    socket.emit('quality-result', { to: peer.to, session: peer.session, ok: true, targetHeight: limit, targetFps: fps });
   }).catch(() => {
     if (peers.get(peer.to) !== peer) return;
     el('statusText').textContent = 'Quality setting unavailable';
@@ -300,8 +297,11 @@ socket.on('quality', ({from, session, value}) => {
   peer.requested = value;
   updateQuality(peer);
 });
-socket.on('quality-result', ({from, session, ok}) => {
-  if (peers.get(from)?.session === session) el('statusText').textContent = ok ? 'Viewing' : 'Quality setting unavailable';
+socket.on('quality-result', ({from, session, ok, targetHeight, targetFps}) => {
+  if (peers.get(from)?.session !== session) return;
+  const hasTarget = ok && Number.isFinite(targetHeight) && [30, 60].includes(targetFps);
+  el('streamTarget').textContent = hasTarget ? 'Target ' + targetHeight + 'p · ' + targetFps + ' fps' : '';
+  el('statusText').textContent = ok ? 'Viewing' : 'Quality setting unavailable';
 });
 
 async function toggleScreenShare() {
@@ -345,6 +345,7 @@ function resetStream() {
   video.srcObject = null;
   video.classList.remove('active');
   el('actualSize').textContent = '';
+  el('streamTarget').textContent = '';
   el('playerTools').hidden = true;
   el('shareBtn').classList.remove('recording');
   el('shareBtnText').textContent = 'Share Screen';
