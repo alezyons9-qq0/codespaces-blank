@@ -18,7 +18,11 @@ let captureUpdates = Promise.resolve();
 let appliedProfile = '';
 let lastViewerLimit = null;
 
-function setPreview(enabled) {
+let previewRequested = false;
+function setPreview(requested) {
+  previewRequested = requested;
+  const enabled = requested && !document.hidden;
+  if (!enabled) video.pause();
   video.srcObject = enabled ? localStream : null;
   video.classList.toggle('active', enabled);
   el('previewNotice').hidden = enabled;
@@ -27,7 +31,7 @@ function setPreview(enabled) {
   el('actualSize').textContent = '';
 }
 
-el('preview').onclick = () => { if (isSharing) setPreview(!video.srcObject); };
+el('preview').onclick = () => { if (isSharing) setPreview(!previewRequested); };
 
 function syncCapture() {
   const track = localStream?.getVideoTracks()[0];
@@ -99,7 +103,7 @@ function showStream(stream, host, height) {
 let playbackTimer;
 function startPlaybackMeter() {
   clearInterval(playbackTimer);
-  if (!video.getVideoPlaybackQuality) return;
+  if (document.hidden || !video.getVideoPlaybackQuality) return;
   let previous;
   playbackTimer = setInterval(() => {
     const { totalVideoFrames, droppedVideoFrames } = video.getVideoPlaybackQuality();
@@ -113,6 +117,15 @@ function startPlaybackMeter() {
   }, 1000);
 }
 
+function updateVisibility() {
+  document.body.classList.toggle('page-hidden', document.hidden);
+  if (isSharing) setPreview(previewRequested);
+  else if (video.srcObject) startPlaybackMeter();
+  if (document.hidden) clearTimeout(overlayTimer);
+  else revealOverlay();
+}
+document.addEventListener('visibilitychange', updateVisibility);
+
 video.onresize = () => {
   if (video.videoHeight) el('actualSize').textContent = (isSharing ? 'Preview ' : '') + video.videoHeight + 'p';
 };
@@ -124,10 +137,15 @@ el('sound').onclick = () => {
   }
   el('sound').textContent = video.muted ? 'Unmute' : 'Mute';
 };
-video.onloadedmetadata = () => video.play().catch(() => {
-  el('sound').hidden = false;
-  el('sound').textContent = 'Play';
-});
+video.onloadedmetadata = () => {
+  const stream = video.srcObject;
+  if (!stream || (isSharing && document.hidden)) return;
+  video.play().catch(() => {
+    if (stream !== video.srcObject || isSharing) return;
+    el('sound').hidden = false;
+    el('sound').textContent = 'Play';
+  });
+};
 el('full').onclick = async () => {
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
@@ -136,8 +154,9 @@ el('full').onclick = async () => {
 };
 const theater = el('theater');
 let overlayTimer;
+updateVisibility();
 function revealOverlay() {
-  if (document.fullscreenElement !== theater) return;
+  if (document.hidden || document.fullscreenElement !== theater) return;
   theater.classList.remove('overlay-idle');
   clearTimeout(overlayTimer);
   overlayTimer = setTimeout(() => theater.classList.add('overlay-idle'), 5500);
@@ -175,7 +194,7 @@ function createPeer(id, session) {
   const peer = { pc, session, to: id, pending: [], requested: 0, updates: Promise.resolve() };
   peers.set(id, peer);
   pc.onicecandidate = ({candidate}) => {
-    if (candidate) socket.emit('webrtc-ice', { to: id, session, candidate });
+    if (candidate) socket.emit('webrtc-ice', { to: id, session, candidate: candidate.toJSON() });
   };
   return peer;
 }
@@ -249,7 +268,7 @@ async function offerTo(id) {
     }
     preferH264(peer.pc);
     await peer.pc.setLocalDescription(await peer.pc.createOffer());
-    socket.emit('webrtc-offer', { to: id, session: peer.session, height: sourceHeight, sdp: peer.pc.localDescription });
+    socket.emit('webrtc-offer', { to: id, session: peer.session, height: sourceHeight, sdp: peer.pc.localDescription.toJSON() });
   } catch {
     if (peers.get(id) === peer) {
       closePeer(id);
@@ -265,14 +284,18 @@ socket.on('webrtc-offer', async ({from, session, height, sdp}) => {
   if (isHost) return;
   closePeer(from);
   const peer = createPeer(from, session);
-  peer.pc.ontrack = ({streams}) => {
+  peer.pc.ontrack = ({streams, receiver, track}) => {
+    if (track.kind === 'video' && 'jitterBufferTarget' in receiver) {
+      try { receiver.jitterBufferTarget = 50; }
+      catch (error) { console.debug('Using browser jitter buffer', error.name); }
+    }
     if (video.srcObject !== streams[0]) showStream(streams[0], false, height);
   };
   try {
     await setRemote(peer, sdp);
     preferH264(peer.pc);
     await peer.pc.setLocalDescription(await peer.pc.createAnswer());
-    socket.emit('webrtc-answer', { to: from, session, sdp: peer.pc.localDescription });
+    socket.emit('webrtc-answer', { to: from, session, sdp: peer.pc.localDescription.toJSON() });
   } catch {
     if (peers.get(from) === peer) el('statusText').textContent = 'Connection failed';
   }
@@ -334,6 +357,7 @@ function resetStream() {
   el('fpsBeforeShare').append(fpsControl);
   clearInterval(playbackTimer);
   isSharing = false;
+  previewRequested = false;
   for (const id of peers.keys()) closePeer(id);
   localStream?.getTracks().forEach(track => track.stop());
   localStream = null;

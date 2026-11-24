@@ -247,6 +247,13 @@
     #screenVideo.active { display: block; }
 
     body.streaming .cloud, body.streaming .stars-layer { display: none; }
+    body.streaming.page-hidden *,
+    body.streaming.page-hidden *::before,
+    body.streaming.page-hidden *::after {
+      animation-play-state: paused !important; transition: none !important;
+      box-shadow: none !important; filter: none !important;
+      backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+    }
     #previewNotice { color: var(--text-muted); text-align: center; padding: 16px; }
 
     #playerTools {
@@ -728,6 +735,7 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="/room-socket.js"></script>
   <script>
     // Generate subtle twinkling stars
     (function() {
@@ -756,7 +764,7 @@
     document.getElementById('roomCodeDisplay').textContent = roomCode;
     document.getElementById('modalRoomCode').textContent = 'Enter your name to join room ' + roomCode;
 
-    const socket = io();
+    const socket = createRoomSocket();
 
     // ---- Name Modal ----
     const nameInput = document.getElementById('nameInput');
@@ -878,7 +886,7 @@
       if (!name) { nameInput.focus(); return; }
       username = name;
       document.getElementById('nameModal').classList.add('hidden');
-      socket.emit('join-room', roomCode, username);
+      if (socket.connected) socket.emit('join-room', roomCode, username);
       document.getElementById('chatInput').disabled = false;
       document.getElementById('sendBtn').disabled = false;
       document.getElementById('micBtn').disabled = false;
@@ -942,6 +950,7 @@
 
     function stopRecording() {
       if (mediaRecorder && mediaRecorder.state === 'recording') {
+        recordedDuration = Math.floor((Date.now() - recStartTime) / 1000);
         mediaRecorder.stop();
       }
       isRecording = false;
