@@ -4,8 +4,8 @@ const quality = el('quality');
 const peers = new Map();
 const fpsControl = el('streamFps');
 const fpsProfiles = {
-  30: { hint: 'detail', preference: 'maintain-resolution', bitrate: 1500000 },
-  60: { hint: 'motion', preference: 'maintain-framerate', bitrate: 6000000 }
+  30: { hint: 'detail', preference: 'maintain-resolution', bitrate: 1800000 },
+  60: { hint: 'motion', preference: 'maintain-resolution', bitrate: 4000000 }
 };
 function selectedFps() {
   return fpsControl.value === '30' ? 30 : 60;
@@ -17,6 +17,7 @@ let broadcastLimit = 0;
 let captureUpdates = Promise.resolve();
 let appliedProfile = '';
 let lastViewerLimit = null;
+let viewerAutoHeight = 0;
 
 function setPreview(enabled) {
   video.srcObject = enabled ? localStream : null;
@@ -58,8 +59,7 @@ function syncCapture() {
 
 function sendViewerLimit() {
   if (isHost || !peers.size || !video.srcObject) return;
-  // Auto lets WebRTC adapt to the connection without coupling encoding to CSS size.
-  const value = quality.value === 'auto' ? 0 : Number(quality.value);
+  const value = quality.value === 'auto' ? viewerAutoHeight : Number(quality.value);
   if (value === lastViewerLimit) return;
   lastViewerLimit = value;
   for (const peer of peers.values()) socket.emit('quality', { to: peer.to, session: peer.session, value });
@@ -67,7 +67,7 @@ function sendViewerLimit() {
 
 function showStream(stream, host, height) {
   sourceHeight = height;
-  quality.replaceChildren(new Option('Maximum', '0'), new Option('Auto', 'auto'));
+  quality.replaceChildren(new Option('Auto', 'auto'), new Option('Maximum', '0'));
   for (const h of heights.filter(h => h < height)) quality.add(new Option(h + 'p', h));
   quality.setAttribute('aria-label', host ? 'Broadcast quality limit' : 'Playback quality');
   quality.title = quality.getAttribute('aria-label');
@@ -80,6 +80,11 @@ function showStream(stream, host, height) {
   } else {
     video.srcObject = stream;
     video.classList.add('active');
+    // Size Auto once. Entering fullscreen must not renegotiate the stream.
+    const displayHeight = el('screenDisplay').clientHeight;
+    viewerAutoHeight = displayHeight > 0
+      ? heights.slice().reverse().find(h => h >= displayHeight) || 0
+      : 0;
     lastViewerLimit = null;
     sendViewerLimit();
     startPlaybackMeter();
