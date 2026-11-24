@@ -52,10 +52,7 @@ io.on("connection", (socket) => {
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     });
 
-    const existingPeers = rooms[roomId].users.filter(u => u.id !== socket.id);
-    if (existingPeers.length > 0) {
-      socket.emit("existing-peers", existingPeers.map(u => u.id));
-    }
+    if (!isHost) io.to(rooms[roomId].hostId).emit("viewer-joined", socket.id);
   });
 
   socket.on("chat-message", (data) => {
@@ -80,21 +77,27 @@ io.on("connection", (socket) => {
     });
   });
 
-  // WebRTC signaling
-  socket.on("webrtc-offer", (data) => {
-    socket.to(socket.roomId).emit("webrtc-offer", { sdp: data.sdp, from: socket.id });
+  socket.on("list-viewers", () => {
+    const room = rooms[socket.roomId];
+    if (room?.hostId === socket.id) {
+      socket.emit("viewers", room.users.filter(user => user.id !== socket.id).map(user => user.id));
+    }
   });
 
-  socket.on("webrtc-answer", (data) => {
-    socket.to(socket.roomId).emit("webrtc-answer", { sdp: data.sdp, from: socket.id });
-  });
-
-  socket.on("webrtc-ice", (data) => {
-    socket.to(socket.roomId).emit("webrtc-ice", { candidate: data.candidate, from: socket.id });
-  });
+  for (const event of ["webrtc-offer", "webrtc-answer", "webrtc-ice", "quality", "quality-result"]) {
+    socket.on(event, (data) => {
+      const room = rooms[socket.roomId];
+      if (!room || !room.users.some(user => user.id === data?.to)) return;
+      const sendingHost = socket.id === room.hostId;
+      if (!sendingHost && data.to !== room.hostId) return;
+      if (["webrtc-offer", "quality-result"].includes(event) && !sendingHost) return;
+      if (["webrtc-answer", "quality"].includes(event) && sendingHost) return;
+      io.to(data.to).emit(event, { ...data, from: socket.id });
+    });
+  }
 
   socket.on("stop-screen-share", () => {
-    socket.to(socket.roomId).emit("stop-screen-share");
+    if (rooms[socket.roomId]?.hostId === socket.id) socket.to(socket.roomId).emit("stop-screen-share");
   });
 
   socket.on("disconnect", () => {
@@ -104,6 +107,7 @@ io.on("connection", (socket) => {
       room.users = room.users.filter(u => u.id !== socket.id);
 
       if (room.hostId === socket.id) {
+        socket.to(socket.roomId).emit("stop-screen-share");
         room.hostId = room.users[0] ? room.users[0].id : null;
         if (room.hostId) {
           io.to(room.hostId).emit("host-status", true);
@@ -117,7 +121,7 @@ io.on("connection", (socket) => {
         system: true,
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       });
-      socket.to(socket.roomId).emit("stop-screen-share");
+      if (room.hostId) io.to(room.hostId).emit("viewer-left", socket.id);
 
       if (room.users.length === 0) {
         delete rooms[socket.roomId];

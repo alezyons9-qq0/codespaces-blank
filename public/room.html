@@ -246,6 +246,17 @@
     #screenVideo { width: 100%; height: 100%; object-fit: contain; display: none; }
     #screenVideo.active { display: block; }
 
+    #playerTools {
+      position: absolute; right: 10px; bottom: 10px; left: auto;
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: end;
+      max-width: calc(100% - 20px); gap: 5px; padding: 5px;
+      border-radius: 8px; background: #170a2ce8; color: white; font-size: 0.8rem;
+    }
+    #playerTools [hidden], #playerTools[hidden] { display: none; }
+    #playerTools button, #playerTools select {
+      background: #39224f; color: white; border: 1px solid var(--glass-border);
+      border-radius: 5px; padding: 6px; cursor: pointer;
+    }
     .screen-placeholder { text-align: center; color: var(--text-dim); padding: 2rem; }
 
     .screen-placeholder svg { width: 80px; height: 80px; margin: 0 auto 1.5rem; display: block; opacity: 0.15; fill: var(--neon-violet); }
@@ -618,6 +629,12 @@
             Viewing Host's Screen
           </div>
           <video id="screenVideo" autoplay playsinline></video>
+          <div id="playerTools" hidden>
+            <output id="actualSize" aria-label="Actual resolution"></output>
+            <select id="quality" aria-label="Playback quality"></select>
+            <button id="sound" type="button">Mute</button>
+            <button id="full" type="button">Full screen</button>
+          </div>
           <div class="screen-placeholder" id="screenPlaceholder">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.11 0-2 .89-2 2v12c0 1.1.89 2 2 2h5v2h8v-2h5c1.1 0 2-.9 2-2V5c0-1.11-.9-2-2-2zm0 14H3V5h18v12z"/></svg>
             <h3>No Screen Shared Yet</h3>
@@ -681,8 +698,6 @@
     let isHost = false;
     let isSharing = false;
     let localStream = null;
-    let peerConnection = null;
-    let pendingCandidates = [];
     const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
     document.getElementById('roomCodeDisplay').textContent = roomCode;
@@ -711,12 +726,6 @@
     socket.on('user-list', (users) => {
       document.getElementById('userCount').textContent = users.length + (users.length === 1 ? ' user' : ' users');
       document.getElementById('userListDisplay').textContent = users.length + (users.length === 1 ? ' user' : ' users') + ' online';
-    });
-
-    socket.on('existing-peers', (peers) => {
-      if (!isHost && peers.length > 0) {
-        // Viewer waits for offer from host
-      }
     });
 
     // ---- Chat ----
@@ -776,138 +785,6 @@
       } else {
         indicator.textContent = '';
       }
-    });
-
-    // ---- WebRTC Screen Sharing ----
-    async function toggleScreenShare() {
-      if (isSharing) { stopScreenShare(); } else { await startScreenShare(); }
-    }
-
-    async function startScreenShare() {
-          try {
-        // Configurăm calitatea maximă forțată la 1080p și 60 FPS
-                const displayMediaOptions = {
-            video: {
-                width: { ideal: 1920, max: 1920 },
-                height: { ideal: 1080, max: 1080 },
-                // Forțăm 60 FPS ca rată ideală ȘI minimă pentru a opri limitările de baterie de pe telefon
-                frameRate: { ideal: 60, min: 60, max: 60 }, 
-                displaySurface: "browser"
-            },
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: false
-            }
-        };
-
-
-        localStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
-        isSharing = true;
-
-        document.getElementById('shareBtn').classList.add('recording');
-        document.getElementById('shareBtnText').textContent = 'Stop Sharing';
-        document.getElementById('statusBadge').className = 'status-badge active';
-        document.getElementById('statusText').textContent = 'Sharing';
-        document.getElementById('hostBadge').classList.add('active');
-        document.getElementById('viewerBadge').classList.remove('active');
-
-        const video = document.getElementById('screenVideo');
-        video.srcObject = localStream;
-        video.classList.add('active');
-        document.getElementById('screenPlaceholder').style.display = 'none';
-
-
-        if (peerConnection) { peerConnection.close(); }
-        peerConnection = new RTCPeerConnection(configuration);
-
-        localStream.getTracks().forEach(track => { peerConnection.addTrack(track, localStream); });
-
-        peerConnection.onicecandidate = (event) => {
-          if (event.candidate) { socket.emit('webrtc-ice', { candidate: event.candidate }); }
-        };
-
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        socket.emit('webrtc-offer', { sdp: offer });
-
-        localStream.getVideoTracks()[0].onended = () => { stopScreenShare(); };
-      } catch (err) {
-        console.error('Screen share error:', err);
-        isSharing = false;
-      }
-    }
-
-    function stopScreenShare() {
-      if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-      if (peerConnection) { peerConnection.close(); peerConnection = null; }
-      isSharing = false;
-
-      document.getElementById('shareBtn').classList.remove('recording');
-      document.getElementById('shareBtnText').textContent = 'Share Screen';
-      document.getElementById('statusBadge').className = 'status-badge';
-      document.getElementById('statusText').textContent = 'Idle';
-      document.getElementById('hostBadge').classList.remove('active');
-
-      if (!document.getElementById('viewerBadge').classList.contains('active')) {
-        document.getElementById('screenVideo').classList.remove('active');
-        document.getElementById('screenPlaceholder').style.display = 'block';
-      }
-
-      socket.emit('stop-screen-share');
-    }
-
-    // ---- WebRTC: Viewer receives offer ----
-    socket.on('webrtc-offer', async (data) => {
-      if (isSharing) return;
-
-      if (peerConnection) { peerConnection.close(); }
-      peerConnection = new RTCPeerConnection(configuration);
-
-      peerConnection.ontrack = (event) => {
-        const video = document.getElementById('screenVideo');
-        video.srcObject = event.streams[0];
-        video.classList.add('active');
-        document.getElementById('screenPlaceholder').style.display = 'none';
-        document.getElementById('viewerBadge').classList.add('active');
-        document.getElementById('statusBadge').className = 'status-badge viewing';
-        document.getElementById('statusText').textContent = 'Viewing';
-      };
-
-      peerConnection.onicecandidate = (event) => {
-        if (event.candidate) { socket.emit('webrtc-ice', { candidate: event.candidate }); }
-      };
-
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      socket.emit('webrtc-answer', { sdp: answer });
-    });
-
-    // ---- WebRTC: Host receives answer ----
-    socket.on('webrtc-answer', async (data) => {
-      if (peerConnection && peerConnection.signalingState !== 'stable') {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      }
-    });
-
-    // ---- WebRTC: ICE candidates ----
-    socket.on('webrtc-ice', async (data) => {
-      if (peerConnection && data.candidate) {
-        try { await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)); }
-        catch (e) { console.error('ICE error:', e); }
-      }
-    });
-
-    socket.on('stop-screen-share', () => {
-      if (peerConnection) { peerConnection.close(); peerConnection = null; }
-      document.getElementById('screenVideo').classList.remove('active');
-      document.getElementById('screenVideo').srcObject = null;
-      document.getElementById('screenPlaceholder').style.display = 'block';
-      document.getElementById('viewerBadge').classList.remove('active');
-      document.getElementById('statusBadge').className = 'status-badge';
-      document.getElementById('statusText').textContent = 'Idle';
-      updatePlaceholder();
     });
 
     function updatePlaceholder() {
@@ -1124,5 +1001,6 @@
 
     setTimeout(() => nameInput.focus(), 100);
   </script>
+  <script src="/stream.js"></script>
 </body>
 </html>
