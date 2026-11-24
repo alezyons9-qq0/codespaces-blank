@@ -5,16 +5,78 @@ const peers = new Map();
 const heights = [2160, 1440, 1080, 720, 480, 360];
 let sourceHeight = 0;
 let broadcastLimit = 0;
+let captureUpdates = Promise.resolve();
+let appliedProfile = '';
+let lastViewerLimit = null;
+
+function setPreview(enabled) {
+  video.srcObject = enabled ? localStream : null;
+  video.classList.toggle('active', enabled);
+  el('previewNotice').hidden = enabled;
+  el('preview').textContent = enabled ? 'Hide preview' : 'Show preview';
+  el('preview').setAttribute('aria-pressed', String(enabled));
+  el('actualSize').textContent = '';
+}
+
+el('preview').onclick = () => { if (isSharing) setPreview(!video.srcObject); };
+
+function syncCapture() {
+  const track = localStream?.getVideoTracks()[0];
+  if (!track) return;
+  captureUpdates = captureUpdates.then(async () => {
+    if (track !== localStream?.getVideoTracks()[0]) return;
+    const automatic = quality.value === 'auto';
+    const busy = peers.size >= 3;
+    const target = automatic ? (busy ? 720 : 1080) : Number(quality.value);
+    const fps = automatic && busy ? 24 : 30;
+    const profile = target + '/' + fps;
+    if (profile === appliedProfile) return;
+    broadcastLimit = target;
+    try {
+      const constraints = { frameRate: { max: fps } };
+      if (target) constraints.height = { max: Math.min(target, sourceHeight || target) };
+      await track.applyConstraints(constraints);
+      if (track !== localStream?.getVideoTracks()[0]) return;
+      appliedProfile = profile;
+    } catch {
+      if (track !== localStream?.getVideoTracks()[0]) return;
+      el('statusText').textContent = 'Sharing with browser capture settings';
+    }
+    peers.forEach(updateQuality);
+  });
+}
+
+function sendViewerLimit() {
+  if (isHost || !peers.size || !video.srcObject) return;
+  const displayHeight = el('screenDisplay').clientHeight;
+  const value = quality.value === 'auto'
+    ? heights.slice().reverse().find(h => h >= displayHeight) || 0
+    : Number(quality.value);
+  if (value === lastViewerLimit) return;
+  lastViewerLimit = value;
+  for (const peer of peers.values()) socket.emit('quality', { to: peer.to, session: peer.session, value });
+}
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(sendViewerLimit).observe(el('screenDisplay'));
+}
 
 function showStream(stream, host, height) {
   sourceHeight = height;
-  quality.replaceChildren(new Option('Maximum', '0'));
+  quality.replaceChildren(new Option('Auto', 'auto'), new Option('Maximum', '0'));
   for (const h of heights.filter(h => h < height)) quality.add(new Option(h + 'p', h));
   quality.setAttribute('aria-label', host ? 'Broadcast quality limit' : 'Playback quality');
   quality.title = quality.getAttribute('aria-label');
   video.muted = host;
-  video.srcObject = stream;
-  video.classList.add('active');
+  document.body.classList.add('streaming');
+  el('preview').hidden = !host;
+  if (host) {
+    setPreview(false);
+  } else {
+    video.srcObject = stream;
+    video.classList.add('active');
+    lastViewerLimit = null;
+    sendViewerLimit();
+  }
   el('playerTools').hidden = false;
   el('sound').hidden = host || !stream.getAudioTracks().length;
   el('sound').textContent = 'Mute';
@@ -52,7 +114,7 @@ document.addEventListener('fullscreenchange', () => {
 
 function closePeer(id) {
   peers.get(id)?.pc.close();
-  peers.delete(id);
+  if (peers.delete(id) && isSharing) syncCapture();
 }
 
 function createPeer(id, session) {
@@ -88,18 +150,14 @@ function updateQuality(peer) {
 }
 
 quality.onchange = () => {
-  const value = Number(quality.value);
-  if (isHost) {
-    broadcastLimit = value;
-    peers.forEach(updateQuality);
-  } else {
-    for (const peer of peers.values()) socket.emit('quality', { to: peer.to, session: peer.session, value });
-  }
+  if (isHost) syncCapture();
+  else sendViewerLimit();
 };
 
 async function offerTo(id) {
   if (!isSharing || peers.has(id)) return;
   const peer = createPeer(id, crypto.randomUUID());
+  syncCapture();
   try {
     for (const track of localStream.getTracks()) {
       const sender = peer.pc.addTrack(track, localStream);
@@ -163,12 +221,13 @@ async function toggleScreenShare() {
   el('shareBtn').disabled = true;
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: 60 }, displaySurface: 'browser' },
+      video: { frameRate: { ideal: 30, max: 30 }, displaySurface: 'browser' },
       audio: true
     });
     const track = localStream.getVideoTracks()[0];
     isSharing = true;
     showStream(localStream, true, track.getSettings().height);
+    syncCapture();
     track.onended = stopScreenShare;
     el('shareBtn').classList.add('recording');
     el('shareBtnText').textContent = 'Stop Sharing';
@@ -180,11 +239,15 @@ async function toggleScreenShare() {
 }
 
 function resetStream() {
+  isSharing = false;
   for (const id of peers.keys()) closePeer(id);
   localStream?.getTracks().forEach(track => track.stop());
   localStream = null;
   broadcastLimit = 0;
-  isSharing = false;
+  appliedProfile = '';
+  document.body.classList.remove('streaming');
+  el('previewNotice').hidden = true;
+  el('preview').hidden = true;
   video.srcObject = null;
   video.classList.remove('active');
   el('actualSize').textContent = '';
