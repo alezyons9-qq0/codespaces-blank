@@ -256,7 +256,7 @@
       border-radius: 8px; background: #170a2ce8; color: white; font-size: 0.8rem;
     }
     #playerTools [hidden], #playerTools[hidden] { display: none; }
-    #playerTools button, #playerTools select {
+    #playerTools button, #playerTools select, #streamFps {
       background: #39224f; color: white; border: 1px solid var(--glass-border);
       border-radius: 5px; padding: 6px; cursor: pointer;
     }
@@ -614,6 +614,12 @@
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg>
             <span id="shareBtnText">Share Screen</span>
           </button>
+          <span id="fpsBeforeShare" hidden>
+            <select id="streamFps" aria-label="Broadcast frame rate" title="Broadcast frame rate">
+              <option value="30">30 FPS</option>
+              <option value="60" selected>60 FPS</option>
+            </select>
+          </span>
           <div class="browser-info">
             <span class="status-badge" id="statusBadge">
               <span class="dot"></span>
@@ -719,6 +725,7 @@
     // ---- Room events ----
     socket.on('host-status', (host) => {
       isHost = host;
+      document.getElementById('fpsBeforeShare').hidden = !host;
       updatePlaceholder();
       if (host) {
         document.getElementById('placeholderHint').textContent = 'You are the host — click "Share Screen" to start';

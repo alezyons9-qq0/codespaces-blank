@@ -2,7 +2,15 @@ const el = id => document.getElementById(id);
 const video = el('screenVideo');
 const quality = el('quality');
 const peers = new Map();
-const motionFrameRate = { ideal: 60, max: 60 };
+const fpsControl = el('streamFps');
+const fpsProfiles = {
+  30: { hint: 'detail', preference: 'maintain-resolution', bitrate: 1800000 },
+  60: { hint: 'motion', preference: 'maintain-framerate', bitrate: 4000000 }
+};
+function selectedFps() {
+  return fpsControl.value === '30' ? 30 : 60;
+}
+fpsControl.onchange = () => { if (isHost && isSharing) syncCapture(); };
 const heights = [2160, 1440, 1080, 720, 480, 360];
 let sourceHeight = 0;
 let broadcastLimit = 0;
@@ -29,11 +37,13 @@ function syncCapture() {
     const automatic = quality.value === 'auto';
     const busy = peers.size >= 3;
     const target = automatic ? (busy ? 720 : 1080) : Number(quality.value);
-    const profile = String(target);
+    const fps = selectedFps();
+    const profile = target + '/' + fps;
     if (profile === appliedProfile) return;
     broadcastLimit = target;
     try {
-      const constraints = { frameRate: motionFrameRate };
+      if ('contentHint' in track) track.contentHint = fpsProfiles[fps].hint;
+      const constraints = { frameRate: { ideal: fps, max: fps } };
       if (target) constraints.height = { max: Math.min(target, sourceHeight || target) };
       await track.applyConstraints(constraints);
       if (track !== localStream?.getVideoTracks()[0]) return;
@@ -70,6 +80,7 @@ function showStream(stream, host, height) {
   document.body.classList.add('streaming');
   el('preview').hidden = !host;
   if (host) {
+    quality.after(fpsControl);
     setPreview(false);
   } else {
     video.srcObject = stream;
@@ -157,14 +168,20 @@ function updateQuality(peer) {
     const height = peer.sender.track.getSettings().height || sourceHeight;
     const limit = Math.min(broadcastLimit || height, peer.requested || height);
     if (!params.encodings?.length) throw new Error('Encoding unavailable');
-    params.encodings[0].scaleResolutionDownBy = Math.max(1, height / limit);
-    params.degradationPreference = 'maintain-framerate';
+    const fps = selectedFps();
+    const encoding = {
+      scaleResolutionDownBy: Math.max(1, height / limit),
+      maxFramerate: fps,
+      maxBitrate: fpsProfiles[fps].bitrate
+    };
+    Object.assign(params.encodings[0], encoding);
+    params.degradationPreference = fpsProfiles[fps].preference;
     try {
       await peer.sender.setParameters(params);
     } catch (error) {
       if (!['TypeError', 'NotSupportedError', 'InvalidModificationError'].includes(error.name)) throw error;
       const fallback = peer.sender.getParameters();
-      fallback.encodings[0].scaleResolutionDownBy = params.encodings[0].scaleResolutionDownBy;
+      Object.assign(fallback.encodings[0], encoding);
       await peer.sender.setParameters(fallback);
     }
     socket.emit('quality-result', { to: peer.to, session: peer.session, ok: true });
@@ -180,6 +197,22 @@ quality.onchange = () => {
   else sendViewerLimit();
 };
 
+function preferH264(pc) {
+  const capabilities = globalThis.RTCRtpReceiver?.getCapabilities?.('video');
+  if (!capabilities?.codecs) return;
+  const h264 = capabilities.codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h264');
+  if (!h264.length) return;
+  const ordered = [...h264, ...capabilities.codecs.filter(codec => !h264.includes(codec))];
+  for (const transceiver of pc.getTransceivers()) {
+    if (transceiver.receiver.track.kind !== 'video') continue;
+    try {
+      transceiver.setCodecPreferences?.(ordered);
+    } catch (error) {
+      console.debug('Using browser codec order', error.name);
+    }
+  }
+}
+
 async function offerTo(id) {
   if (!isSharing || peers.has(id)) return;
   const peer = createPeer(id, crypto.randomUUID());
@@ -189,6 +222,7 @@ async function offerTo(id) {
       const sender = peer.pc.addTrack(track, localStream);
       if (track.kind === 'video') peer.sender = sender;
     }
+    preferH264(peer.pc);
     await peer.pc.setLocalDescription(await peer.pc.createOffer());
     socket.emit('webrtc-offer', { to: id, session: peer.session, height: sourceHeight, sdp: peer.pc.localDescription });
   } catch {
@@ -211,6 +245,7 @@ socket.on('webrtc-offer', async ({from, session, height, sdp}) => {
   };
   try {
     await setRemote(peer, sdp);
+    preferH264(peer.pc);
     await peer.pc.setLocalDescription(await peer.pc.createAnswer());
     socket.emit('webrtc-answer', { to: from, session, sdp: peer.pc.localDescription });
   } catch {
@@ -246,12 +281,13 @@ async function toggleScreenShare() {
   if (isSharing) return stopScreenShare();
   el('shareBtn').disabled = true;
   try {
+    const fps = selectedFps();
     localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: motionFrameRate, displaySurface: 'browser' },
+      video: { frameRate: { ideal: fps, max: fps }, displaySurface: 'browser' },
       audio: true
     });
     const track = localStream.getVideoTracks()[0];
-    if ('contentHint' in track) track.contentHint = 'motion';
+    if ('contentHint' in track) track.contentHint = fpsProfiles[fps].hint;
     isSharing = true;
     showStream(localStream, true, track.getSettings().height);
     syncCapture();
@@ -266,6 +302,7 @@ async function toggleScreenShare() {
 }
 
 function resetStream() {
+  el('fpsBeforeShare').append(fpsControl);
   clearInterval(playbackTimer);
   isSharing = false;
   for (const id of peers.keys()) closePeer(id);
