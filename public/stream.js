@@ -194,6 +194,24 @@ function createPeer(id, session) {
   const pc = new RTCPeerConnection(configuration);
   const peer = { pc, session, pending: [] };
   peers.set(id, peer);
+  pc.onconnectionstatechange = async () => {
+    if (pc.connectionState !== 'connected') return;
+    const sender = pc.getSenders().find(sender => sender.track?.kind === 'video');
+    if (!sender) return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings?.length) params.encodings = [{}];
+      const encoding = params.encodings[0];
+      encoding.maxBitrate = videoKbps * 1000;
+      encoding.minBitrate = 4000000; // Nonstandard; browsers may ignore this field.
+      encoding.maxFramerate = 60;
+      encoding.scaleResolutionDownBy = 1;
+      params.degradationPreference = 'maintain-framerate';
+      await sender.setParameters(params);
+    } catch (error) {
+      console.warn('Video sender settings were not applied', error);
+    }
+  };
   pc.onicecandidate = ({candidate}) => {
     if (candidate) socket.emit('webrtc-ice', { to: id, session, candidate: candidate.toJSON() });
   };
@@ -214,7 +232,6 @@ async function offerTo(id) {
         const transceiver = peer.pc.addTransceiver(track, { direction: 'sendonly', streams: [localStream] });
         await preferH264(transceiver, RTCRtpSender.getCapabilities?.('video'), track.getSettings());
         if (peers.get(id) !== peer) return;
-        peer.videoSender = transceiver.sender;
       } else {
         peer.pc.addTrack(track, localStream);
       }
@@ -264,18 +281,7 @@ socket.on('webrtc-answer', async ({from, session, sdp}) => {
   if (peer?.session !== session) return;
   try {
     await setRemote(peer, sdp);
-  } catch { el('statusText').textContent = 'Connection failed'; return; }
-  try {
-    const params = peer.videoSender.getParameters();
-    for (const encoding of params.encodings) {
-      encoding.scaleResolutionDownBy = 1;
-      encoding.maxBitrate = videoKbps * 1000;
-    }
-    params.degradationPreference = 'maintain-resolution';
-    await peer.videoSender.setParameters(params);
-  } catch (error) {
-    console.debug('Using negotiated video settings', error.name);
-  }
+  } catch { el('statusText').textContent = 'Connection failed'; }
 });
 socket.on('webrtc-ice', async ({from, session, candidate}) => {
   const peer = peers.get(from);
@@ -289,7 +295,11 @@ async function toggleScreenShare() {
   el('shareBtn').disabled = true;
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { resizeMode: { ideal: 'none' }, frameRate: { ideal: 60 } },
+      video: {
+        width: { ideal: 1920, max: 1920 },
+        height: { ideal: 1080, max: 1080 },
+        frameRate: { ideal: 60, max: 60 }
+      },
       audio: true
     });
     const track = localStream.getVideoTracks()[0];
