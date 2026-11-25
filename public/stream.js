@@ -26,31 +26,16 @@ function forceH264(sdp) {
   }).join('');
 }
 
-async function preferH264(transceiver, capabilities, captureSettings) {
+function preferH264(transceiver, capabilities) {
   if (!transceiver.setCodecPreferences || !capabilities) return;
   const codecs = capabilities.codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h264');
   if (!codecs.length) throw new Error(noH264);
-  if (captureSettings && navigator.mediaCapabilities?.encodingInfo) {
-    const { width, height, frameRate } = captureSettings;
-    const ranked = await Promise.all(codecs.map(async codec => {
-      let efficient = false;
-      try {
-        const contentType = [codec.mimeType, codec.sdpFmtpLine].filter(Boolean).join(';');
-        const info = await navigator.mediaCapabilities.encodingInfo({
-          type: 'webrtc',
-          video: { contentType, width, height, framerate: frameRate || 60, bitrate: videoKbps * 1000 }
-        });
-        efficient = info.supported && info.powerEfficient;
-      } catch {
-        // Capability queries are optional; retain the browser order for unknown profiles.
-      }
-      return { codec, efficient };
-    }));
-    ranked.sort((a, b) => Number(b.efficient) - Number(a.efficient));
-    transceiver.setCodecPreferences(ranked.map(entry => entry.codec));
-  } else {
-    transceiver.setCodecPreferences(codecs);
-  }
+
+  const preferred = codec => /(?:^|;)\s*profile-level-id=(?:42001f|42e01f)\s*(?:;|$)/i.test(codec.sdpFmtpLine || '');
+  transceiver.setCodecPreferences([
+    ...codecs.filter(preferred),
+    ...codecs.filter(codec => !preferred(codec))
+  ]);
 }
 
 async function setLocalH264(pc, description) {
@@ -201,11 +186,9 @@ function createPeer(id, session) {
     try {
       const params = sender.getParameters();
       if (!params.encodings?.length) params.encodings = [{}];
-      const encoding = params.encodings[0];
-      encoding.maxBitrate = videoKbps * 1000;
-      encoding.minBitrate = 4000000; // Nonstandard; browsers may ignore this field.
-      encoding.maxFramerate = 60;
-      encoding.scaleResolutionDownBy = 1;
+      params.encodings[0].maxBitrate = 8000000;
+      params.encodings[0].maxFramerate = 60;
+      params.encodings[0].scaleResolutionDownBy = 1;
       params.degradationPreference = 'maintain-framerate';
       await sender.setParameters(params);
     } catch (error) {
@@ -230,7 +213,7 @@ async function offerTo(id) {
     for (const track of localStream.getTracks()) {
       if (track.kind === 'video') {
         const transceiver = peer.pc.addTransceiver(track, { direction: 'sendonly', streams: [localStream] });
-        await preferH264(transceiver, RTCRtpSender.getCapabilities?.('video'), track.getSettings());
+        preferH264(transceiver, RTCRtpSender.getCapabilities?.('video'));
         if (peers.get(id) !== peer) return;
       } else {
         peer.pc.addTrack(track, localStream);
@@ -263,7 +246,7 @@ socket.on('webrtc-offer', async ({from, session, sdp}) => {
     if (forceH264(sdp.sdp) !== sdp.sdp) {
       for (const transceiver of peer.pc.getTransceivers()) {
         if (transceiver.receiver.track.kind === 'video') {
-          await preferH264(transceiver, RTCRtpReceiver.getCapabilities?.('video'));
+          preferH264(transceiver, RTCRtpReceiver.getCapabilities?.('video'));
         }
       }
     }
@@ -296,9 +279,9 @@ async function toggleScreenShare() {
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        width: { ideal: 1920, max: 1920 },
-        height: { ideal: 1080, max: 1080 },
-        frameRate: { ideal: 60, max: 60 }
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 60 }
       },
       audio: true
     });
