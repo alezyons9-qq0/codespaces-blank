@@ -1,7 +1,46 @@
 const el = id => document.getElementById(id);
 const video = el('screenVideo');
 const peers = new Map();
-const videoKbps = 8000;
+const videoKbps = 3500;
+const modeSelect = el('shareMode');
+const modes = {
+  performance: { width: 1280, height: 720, fps: 60, hint: 'motion' },
+  clarity: { width: 1920, height: 1080, fps: 30, hint: 'detail' }
+};
+let selectedMode = modeSelect.value;
+
+function captureConstraints({ width, height, fps }) {
+  return {
+    width: { ideal: width, max: width },
+    height: { ideal: height, max: height },
+    frameRate: { ideal: fps, max: fps }
+  };
+}
+
+modeSelect.onchange = async () => {
+  if (!isHost) return;
+  const next = modeSelect.value;
+  const track = localStream?.getVideoTracks()[0];
+  if (!track) {
+    selectedMode = next;
+    return;
+  }
+  modeSelect.disabled = true;
+  try {
+    await track.applyConstraints(captureConstraints(modes[next]));
+    if (track !== localStream?.getVideoTracks()[0]) return;
+    if ('contentHint' in track) track.contentHint = modes[next].hint;
+    selectedMode = next;
+    el('statusText').textContent = 'Sharing';
+  } catch {
+    if (track === localStream?.getVideoTracks()[0]) {
+      modeSelect.value = selectedMode;
+      el('statusText').textContent = 'Mode unavailable';
+    }
+  } finally {
+    if (track === localStream?.getVideoTracks()[0]) modeSelect.disabled = false;
+  }
+};
 const noH264 = 'H.264 video is unavailable for this connection.';
 
 function forceH264(sdp) {
@@ -186,10 +225,10 @@ function createPeer(id, session) {
     try {
       const params = sender.getParameters();
       if (!params.encodings?.length) params.encodings = [{}];
-      params.encodings[0].maxBitrate = 8000000;
+      params.encodings[0].maxBitrate = videoKbps * 1000;
       params.encodings[0].maxFramerate = 60;
       params.encodings[0].scaleResolutionDownBy = 1;
-      params.degradationPreference = 'maintain-framerate';
+      params.degradationPreference = 'balanced';
       await sender.setParameters(params);
     } catch (error) {
       console.warn('Video sender settings were not applied', error);
@@ -276,17 +315,14 @@ async function toggleScreenShare() {
   if (!isHost) return;
   if (isSharing) return stopScreenShare();
   el('shareBtn').disabled = true;
+  modeSelect.disabled = true;
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-        frameRate: { ideal: 60 }
-      },
+      video: captureConstraints(modes[selectedMode]),
       audio: true
     });
     const track = localStream.getVideoTracks()[0];
-    if ('contentHint' in track) track.contentHint = 'motion';
+    if ('contentHint' in track) track.contentHint = modes[selectedMode].hint;
     isSharing = true;
     showStream(localStream, true);
     track.onended = stopScreenShare;
@@ -296,10 +332,15 @@ async function toggleScreenShare() {
   } catch (error) {
     resetStream();
     el('statusText').textContent = error.name === 'NotAllowedError' ? 'Sharing cancelled' : 'Screen sharing unavailable';
-  } finally { el('shareBtn').disabled = false; }
+  } finally {
+    el('shareBtn').disabled = false;
+    modeSelect.disabled = false;
+  }
 }
 
 function resetStream() {
+  modeSelect.disabled = false;
+  modeSelect.value = selectedMode;
   if (document.fullscreenElement === el('theater')) document.exitFullscreen().catch(() => {});
   clearInterval(playbackTimer);
   isSharing = false;
@@ -327,5 +368,5 @@ function stopScreenShare() {
   socket.emit('stop-screen-share');
 }
 socket.on('stop-screen-share', resetStream);
-socket.on('disconnect', () => { resetStream(); isHost = false; });
+socket.on('disconnect', () => { resetStream(); isHost = false; modeSelect.hidden = true; });
 socket.on('connect', () => { if (username) socket.emit('join-room', roomCode, username); });

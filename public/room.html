@@ -196,6 +196,11 @@
       display: flex; align-items: center; gap: 12px; flex-shrink: 0;
     }
 
+    #shareMode {
+      max-width: 100%; padding: 7px; border: 1px solid var(--glass-border);
+      border-radius: 8px; background: #281638; color: var(--text); font: inherit;
+    }
+    .browser-toolbar { flex-wrap: wrap; }
     .share-btn {
       display: flex; align-items: center; gap: 8px;
       background: linear-gradient(135deg, rgba(180, 140, 240, 0.2), rgba(219, 124, 183, 0.2));
@@ -661,6 +666,10 @@
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg>
             <span id="shareBtnText">Share Screen</span>
           </button>
+          <select id="shareMode" aria-label="Mod de partajare" hidden>
+            <option value="performance">Performanță · 720p / 60 FPS</option>
+            <option value="clarity">Claritate · 1080p / 30 FPS</option>
+          </select>
           <div class="browser-info">
             <span class="status-badge" id="statusBadge">
               <span class="dot"></span>
@@ -767,6 +776,7 @@
     // ---- Room events ----
     socket.on('host-status', (host) => {
       isHost = host;
+      document.getElementById('shareMode').hidden = !host;
       updatePlaceholder();
       if (host) {
         document.getElementById('placeholderHint').textContent = 'You are the host — click "Share Screen" to start';
