@@ -26,11 +26,31 @@ function forceH264(sdp) {
   }).join('');
 }
 
-function preferH264(transceiver, capabilities) {
+async function preferH264(transceiver, capabilities, captureSettings) {
   if (!transceiver.setCodecPreferences || !capabilities) return;
   const codecs = capabilities.codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h264');
   if (!codecs.length) throw new Error(noH264);
-  transceiver.setCodecPreferences(codecs);
+  if (captureSettings && navigator.mediaCapabilities?.encodingInfo) {
+    const { width, height, frameRate } = captureSettings;
+    const ranked = await Promise.all(codecs.map(async codec => {
+      let efficient = false;
+      try {
+        const contentType = [codec.mimeType, codec.sdpFmtpLine].filter(Boolean).join(';');
+        const info = await navigator.mediaCapabilities.encodingInfo({
+          type: 'webrtc',
+          video: { contentType, width, height, framerate: frameRate || 60, bitrate: videoKbps * 1000 }
+        });
+        efficient = info.supported && info.powerEfficient;
+      } catch {
+        // Capability queries are optional; retain the browser order for unknown profiles.
+      }
+      return { codec, efficient };
+    }));
+    ranked.sort((a, b) => Number(b.efficient) - Number(a.efficient));
+    transceiver.setCodecPreferences(ranked.map(entry => entry.codec));
+  } else {
+    transceiver.setCodecPreferences(codecs);
+  }
 }
 
 async function setLocalH264(pc, description) {
@@ -192,7 +212,8 @@ async function offerTo(id) {
     for (const track of localStream.getTracks()) {
       if (track.kind === 'video') {
         const transceiver = peer.pc.addTransceiver(track, { direction: 'sendonly', streams: [localStream] });
-        preferH264(transceiver, RTCRtpSender.getCapabilities?.('video'));
+        await preferH264(transceiver, RTCRtpSender.getCapabilities?.('video'), track.getSettings());
+        if (peers.get(id) !== peer) return;
         peer.videoSender = transceiver.sender;
       } else {
         peer.pc.addTrack(track, localStream);
@@ -221,9 +242,12 @@ socket.on('webrtc-offer', async ({from, session, sdp}) => {
   };
   try {
     await setRemote(peer, sdp);
-    for (const transceiver of peer.pc.getTransceivers()) {
-      if (transceiver.receiver.track.kind === 'video') {
-        preferH264(transceiver, RTCRtpReceiver.getCapabilities?.('video'));
+    // Keep the sender's H.264 profile order when answering a H.264-only offer.
+    if (forceH264(sdp.sdp) !== sdp.sdp) {
+      for (const transceiver of peer.pc.getTransceivers()) {
+        if (transceiver.receiver.track.kind === 'video') {
+          await preferH264(transceiver, RTCRtpReceiver.getCapabilities?.('video'));
+        }
       }
     }
     const answer = await setLocalH264(peer.pc, await peer.pc.createAnswer());
