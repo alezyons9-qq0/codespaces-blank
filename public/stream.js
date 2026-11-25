@@ -1,22 +1,6 @@
 const el = id => document.getElementById(id);
 const video = el('screenVideo');
-const quality = el('quality');
 const peers = new Map();
-const fpsControl = el('streamFps');
-const fpsProfiles = {
-  30: { hint: 'detail', preference: 'maintain-resolution', bitrate: 1800000 },
-  60: { hint: 'motion', preference: 'maintain-resolution', bitrate: 4000000 }
-};
-function selectedFps() {
-  return fpsControl.value === '30' ? 30 : 60;
-}
-fpsControl.onchange = () => { if (isHost && isSharing) syncCapture(); };
-const heights = [2160, 1440, 1080, 720, 480, 360];
-let sourceHeight = 0;
-let broadcastLimit = 0;
-let captureUpdates = Promise.resolve();
-let appliedProfile = '';
-let lastViewerLimit = null;
 
 let previewRequested = false;
 function setPreview(requested) {
@@ -33,61 +17,15 @@ function setPreview(requested) {
 
 el('preview').onclick = () => { if (isSharing) setPreview(!previewRequested); };
 
-function syncCapture() {
-  const track = localStream?.getVideoTracks()[0];
-  if (!track) return;
-  captureUpdates = captureUpdates.then(async () => {
-    if (track !== localStream?.getVideoTracks()[0]) return;
-    const automatic = quality.value === 'auto';
-    const busy = peers.size >= 3;
-    const target = automatic ? (busy ? 720 : 1080) : Number(quality.value);
-    const fps = selectedFps();
-    const profile = target + '/' + fps;
-    if (profile === appliedProfile) return;
-    broadcastLimit = target;
-    try {
-      if ('contentHint' in track) track.contentHint = fpsProfiles[fps].hint;
-      const constraints = { frameRate: { ideal: fps, max: fps } };
-      if (target) {
-        const height = Math.min(target, sourceHeight || target);
-        constraints.height = { ideal: height, max: height };
-      }
-      await track.applyConstraints(constraints);
-      if (track !== localStream?.getVideoTracks()[0]) return;
-      appliedProfile = profile;
-    } catch {
-      if (track !== localStream?.getVideoTracks()[0]) return;
-      el('statusText').textContent = 'Sharing with browser capture settings';
-    }
-    peers.forEach(updateQuality);
-  });
-}
-
-function sendViewerLimit() {
-  if (isHost || !peers.size || !video.srcObject) return;
-  const value = quality.value === 'auto' ? 0 : Number(quality.value);
-  if (value === lastViewerLimit) return;
-  lastViewerLimit = value;
-  for (const peer of peers.values()) socket.emit('quality', { to: peer.to, session: peer.session, value });
-}
-
-function showStream(stream, host, height) {
-  sourceHeight = height;
-  quality.replaceChildren(new Option('Auto', 'auto'), new Option('Maximum', '0'));
-  for (const h of heights.filter(h => h <= height)) quality.add(new Option(h + 'p', h));
-  quality.setAttribute('aria-label', host ? 'Broadcast quality limit' : 'Playback quality');
-  quality.title = quality.getAttribute('aria-label');
+function showStream(stream, host) {
   video.muted = host;
   document.body.classList.add('streaming');
   el('preview').hidden = !host;
   if (host) {
-    quality.after(fpsControl);
     setPreview(false);
   } else {
     video.srcObject = stream;
     video.classList.add('active');
-    lastViewerLimit = null;
-    sendViewerLimit();
     startPlaybackMeter();
   }
   el('playerTools').hidden = false;
@@ -186,12 +124,12 @@ el('overlayToggle').onclick = () => setChatVisible(el('chatPanel').hidden);
 
 function closePeer(id) {
   peers.get(id)?.pc.close();
-  if (peers.delete(id) && isSharing) syncCapture();
+  peers.delete(id);
 }
 
 function createPeer(id, session) {
   const pc = new RTCPeerConnection(configuration);
-  const peer = { pc, session, to: id, pending: [], requested: 0, updates: Promise.resolve() };
+  const peer = { pc, session, pending: [] };
   peers.set(id, peer);
   pc.onicecandidate = ({candidate}) => {
     if (candidate) socket.emit('webrtc-ice', { to: id, session, candidate: candidate.toJSON() });
@@ -204,71 +142,15 @@ async function setRemote(peer, sdp) {
   for (const candidate of peer.pending.splice(0)) await peer.pc.addIceCandidate(candidate);
 }
 
-function updateQuality(peer) {
-  peer.updates = peer.updates.then(async () => {
-    if (peers.get(peer.to) !== peer || !peer.pc.remoteDescription) return;
-    const params = peer.sender.getParameters();
-    const height = peer.sender.track.getSettings().height || sourceHeight;
-    const limit = Math.min(broadcastLimit || height, peer.requested || height);
-    if (!params.encodings?.length) throw new Error('Encoding unavailable');
-    const fps = selectedFps();
-    const encoding = {
-      scaleResolutionDownBy: Math.max(1, height / limit),
-      maxFramerate: fps,
-      maxBitrate: fps === 60 && limit >= 1080 && Number(quality.value) > 0 ? 6000000 : fpsProfiles[fps].bitrate
-    };
-    Object.assign(params.encodings[0], encoding);
-    params.degradationPreference = fpsProfiles[fps].preference;
-    try {
-      await peer.sender.setParameters(params);
-    } catch (error) {
-      if (!['TypeError', 'NotSupportedError', 'InvalidModificationError'].includes(error.name)) throw error;
-      const fallback = peer.sender.getParameters();
-      Object.assign(fallback.encodings[0], encoding);
-      await peer.sender.setParameters(fallback);
-    }
-    socket.emit('quality-result', { to: peer.to, session: peer.session, ok: true, targetHeight: limit, targetFps: fps });
-  }).catch(() => {
-    if (peers.get(peer.to) !== peer) return;
-    el('statusText').textContent = 'Quality setting unavailable';
-    socket.emit('quality-result', { to: peer.to, session: peer.session, ok: false });
-  });
-}
-
-quality.onchange = () => {
-  if (isHost) syncCapture();
-  else sendViewerLimit();
-};
-
-function preferH264(pc) {
-  const capabilities = globalThis.RTCRtpReceiver?.getCapabilities?.('video');
-  if (!capabilities?.codecs) return;
-  const h264 = capabilities.codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h264');
-  if (!h264.length) return;
-  // Preserve the browser's order among the H.264 profiles it supports.
-  const ordered = [...h264, ...capabilities.codecs.filter(codec => !h264.includes(codec))];
-  for (const transceiver of pc.getTransceivers()) {
-    if (transceiver.receiver.track.kind !== 'video') continue;
-    try {
-      transceiver.setCodecPreferences?.(ordered);
-    } catch (error) {
-      console.debug('Using browser codec order', error.name);
-    }
-  }
-}
-
 async function offerTo(id) {
   if (!isSharing || peers.has(id)) return;
   const peer = createPeer(id, crypto.randomUUID());
-  syncCapture();
   try {
     for (const track of localStream.getTracks()) {
-      const sender = peer.pc.addTrack(track, localStream);
-      if (track.kind === 'video') peer.sender = sender;
+      peer.pc.addTrack(track, localStream);
     }
-    preferH264(peer.pc);
     await peer.pc.setLocalDescription(await peer.pc.createOffer());
-    socket.emit('webrtc-offer', { to: id, session: peer.session, height: sourceHeight, sdp: peer.pc.localDescription.toJSON() });
+    socket.emit('webrtc-offer', { to: id, session: peer.session, sdp: peer.pc.localDescription.toJSON() });
   } catch {
     if (peers.get(id) === peer) {
       closePeer(id);
@@ -280,20 +162,15 @@ socket.on('viewers', ids => ids.forEach(offerTo));
 socket.on('viewer-joined', offerTo);
 socket.on('viewer-left', closePeer);
 
-socket.on('webrtc-offer', async ({from, session, height, sdp}) => {
+socket.on('webrtc-offer', async ({from, session, sdp}) => {
   if (isHost) return;
   closePeer(from);
   const peer = createPeer(from, session);
-  peer.pc.ontrack = ({streams, receiver, track}) => {
-    if (track.kind === 'video' && 'jitterBufferTarget' in receiver) {
-      try { receiver.jitterBufferTarget = 50; }
-      catch (error) { console.debug('Using browser jitter buffer', error.name); }
-    }
-    if (video.srcObject !== streams[0]) showStream(streams[0], false, height);
+  peer.pc.ontrack = ({streams}) => {
+    if (video.srcObject !== streams[0]) showStream(streams[0], false);
   };
   try {
     await setRemote(peer, sdp);
-    preferH264(peer.pc);
     await peer.pc.setLocalDescription(await peer.pc.createAnswer());
     socket.emit('webrtc-answer', { to: from, session, sdp: peer.pc.localDescription.toJSON() });
   } catch {
@@ -305,7 +182,6 @@ socket.on('webrtc-answer', async ({from, session, sdp}) => {
   if (peer?.session !== session) return;
   try {
     await setRemote(peer, sdp);
-    updateQuality(peer);
   } catch { el('statusText').textContent = 'Connection failed'; }
 });
 socket.on('webrtc-ice', async ({from, session, candidate}) => {
@@ -314,34 +190,19 @@ socket.on('webrtc-ice', async ({from, session, candidate}) => {
   if (!peer.pc.remoteDescription) peer.pending.push(candidate);
   else await peer.pc.addIceCandidate(candidate).catch(console.warn);
 });
-socket.on('quality', ({from, session, value}) => {
-  const peer = peers.get(from);
-  if (!peer || peer.session !== session || ![0, ...heights].includes(value)) return;
-  peer.requested = value;
-  updateQuality(peer);
-});
-socket.on('quality-result', ({from, session, ok, targetHeight, targetFps}) => {
-  if (peers.get(from)?.session !== session) return;
-  const hasTarget = ok && Number.isFinite(targetHeight) && [30, 60].includes(targetFps);
-  el('streamTarget').textContent = hasTarget ? 'Target ' + targetHeight + 'p · ' + targetFps + ' fps' : '';
-  el('statusText').textContent = ok ? 'Viewing' : 'Quality setting unavailable';
-});
-
 async function toggleScreenShare() {
   if (!isHost) return;
   if (isSharing) return stopScreenShare();
   el('shareBtn').disabled = true;
   try {
-    const fps = selectedFps();
     localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: fps, max: fps }, displaySurface: 'browser' },
+      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } },
       audio: true
     });
     const track = localStream.getVideoTracks()[0];
-    if ('contentHint' in track) track.contentHint = fpsProfiles[fps].hint;
+    if ('contentHint' in track) track.contentHint = 'motion';
     isSharing = true;
-    showStream(localStream, true, track.getSettings().height);
-    syncCapture();
+    showStream(localStream, true);
     track.onended = stopScreenShare;
     el('shareBtn').classList.add('recording');
     el('shareBtnText').textContent = 'Stop Sharing';
@@ -354,22 +215,18 @@ async function toggleScreenShare() {
 
 function resetStream() {
   if (document.fullscreenElement === el('theater')) document.exitFullscreen().catch(() => {});
-  el('fpsBeforeShare').append(fpsControl);
   clearInterval(playbackTimer);
   isSharing = false;
   previewRequested = false;
   for (const id of peers.keys()) closePeer(id);
   localStream?.getTracks().forEach(track => track.stop());
   localStream = null;
-  broadcastLimit = 0;
-  appliedProfile = '';
   document.body.classList.remove('streaming');
   el('previewNotice').hidden = true;
   el('preview').hidden = true;
   video.srcObject = null;
   video.classList.remove('active');
   el('actualSize').textContent = '';
-  el('streamTarget').textContent = '';
   el('playerTools').hidden = true;
   el('shareBtn').classList.remove('recording');
   el('shareBtnText').textContent = 'Share Screen';

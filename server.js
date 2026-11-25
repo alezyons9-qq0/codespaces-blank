@@ -84,14 +84,14 @@ io.on("connection", (socket) => {
     }
   });
 
-  for (const event of ["webrtc-offer", "webrtc-answer", "webrtc-ice", "quality", "quality-result"]) {
+  for (const event of ["webrtc-offer", "webrtc-answer", "webrtc-ice"]) {
     socket.on(event, (data) => {
       const room = rooms[socket.roomId];
       if (!room || !room.users.some(user => user.id === data?.to)) return;
       const sendingHost = socket.id === room.hostId;
       if (!sendingHost && data.to !== room.hostId) return;
-      if (["webrtc-offer", "quality-result"].includes(event) && !sendingHost) return;
-      if (["webrtc-answer", "quality"].includes(event) && sendingHost) return;
+      if (event === "webrtc-offer" && !sendingHost) return;
+      if (event === "webrtc-answer" && sendingHost) return;
       io.to(data.to).emit(event, { ...data, from: socket.id });
     });
   }
