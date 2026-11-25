@@ -1,6 +1,28 @@
 const el = id => document.getElementById(id);
 const video = el('screenVideo');
 const peers = new Map();
+const videoKbps = 8000;
+let captureCheck;
+const sourceWarning = 'Choose a screen or 16:9 window that supports 1920 × 1080.';
+
+function isFullHD(track) {
+  const { width, height } = track.getSettings();
+  return width === 1920 && height === 1080;
+}
+
+// Set the media bandwidth on the signaled description, leaving other sections intact.
+function videoDescription(pc) {
+  const { type, sdp } = pc.localDescription;
+  const sections = sdp.split(/(?=^m=)/m).map(section => {
+    if (!section.startsWith('m=video ')) return section;
+    const lines = section.split(/\r?\n/).filter(line => !/^b=AS:/.test(line));
+    let i = 1;
+    while (/^[ic]=/.test(lines[i])) i++;
+    lines.splice(i, 0, 'b=AS:' + videoKbps);
+    return lines.join('\r\n');
+  });
+  return { type, sdp: sections.join('') };
+}
 
 let previewRequested = false;
 function setPreview(requested) {
@@ -146,11 +168,21 @@ async function offerTo(id) {
   if (!isSharing || peers.has(id)) return;
   const peer = createPeer(id, crypto.randomUUID());
   try {
+    let videoSender;
     for (const track of localStream.getTracks()) {
-      peer.pc.addTrack(track, localStream);
+      const sender = peer.pc.addTrack(track, localStream);
+      if (track.kind === 'video') videoSender = sender;
     }
     await peer.pc.setLocalDescription(await peer.pc.createOffer());
-    socket.emit('webrtc-offer', { to: id, session: peer.session, sdp: peer.pc.localDescription.toJSON() });
+    const params = videoSender.getParameters();
+    for (const encoding of params.encodings) {
+      encoding.scaleResolutionDownBy = 1;
+      encoding.maxBitrate = videoKbps * 1000;
+    }
+    params.degradationPreference = 'maintain-resolution';
+    await videoSender.setParameters(params);
+    if (peers.get(id) !== peer) return;
+    socket.emit('webrtc-offer', { to: id, session: peer.session, sdp: videoDescription(peer.pc) });
   } catch {
     if (peers.get(id) === peer) {
       closePeer(id);
@@ -172,7 +204,7 @@ socket.on('webrtc-offer', async ({from, session, sdp}) => {
   try {
     await setRemote(peer, sdp);
     await peer.pc.setLocalDescription(await peer.pc.createAnswer());
-    socket.emit('webrtc-answer', { to: from, session, sdp: peer.pc.localDescription.toJSON() });
+    socket.emit('webrtc-answer', { to: from, session, sdp: videoDescription(peer.pc) });
   } catch {
     if (peers.get(from) === peer) el('statusText').textContent = 'Connection failed';
   }
@@ -200,20 +232,31 @@ async function toggleScreenShare() {
       audio: true
     });
     const track = localStream.getVideoTracks()[0];
+    await track.applyConstraints({
+      width: { exact: 1920 }, height: { exact: 1080 }, frameRate: { ideal: 60 }
+    });
+    if (!isFullHD(track)) throw new DOMException(sourceWarning, 'OverconstrainedError');
     if ('contentHint' in track) track.contentHint = 'motion';
     isSharing = true;
     showStream(localStream, true);
     track.onended = stopScreenShare;
+    captureCheck = setInterval(() => {
+      if (isFullHD(track)) return;
+      stopScreenShare();
+      el('statusText').textContent = sourceWarning;
+    }, 1000);
     el('shareBtn').classList.add('recording');
     el('shareBtnText').textContent = 'Stop Sharing';
     socket.emit('list-viewers');
   } catch (error) {
     resetStream();
-    el('statusText').textContent = error.name === 'NotAllowedError' ? 'Sharing cancelled' : 'Screen sharing unavailable';
+    const message = error.name === 'NotAllowedError' ? 'Sharing cancelled' : 'Screen sharing unavailable';
+    el('statusText').textContent = error.name === 'OverconstrainedError' ? sourceWarning : message;
   } finally { el('shareBtn').disabled = false; }
 }
 
 function resetStream() {
+  clearInterval(captureCheck);
   if (document.fullscreenElement === el('theater')) document.exitFullscreen().catch(() => {});
   clearInterval(playbackTimer);
   isSharing = false;
