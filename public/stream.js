@@ -2,18 +2,47 @@ const el = id => document.getElementById(id);
 const video = el('screenVideo');
 const peers = new Map();
 const videoKbps = 8000;
-// Set the media bandwidth on the signaled description, leaving other sections intact.
-function videoDescription(pc) {
-  const { type, sdp } = pc.localDescription;
-  const sections = sdp.split(/(?=^m=)/m).map(section => {
+const noH264 = 'H.264 video is unavailable for this connection.';
+
+function forceH264(sdp) {
+  const sections = sdp.split(/(?=^m=)/m);
+  return sections.map(section => {
     if (!section.startsWith('m=video ')) return section;
-    const lines = section.split(/\r?\n/).filter(line => !/^b=AS:/.test(line));
-    let i = 1;
-    while (/^[ic]=/.test(lines[i])) i++;
-    lines.splice(i, 0, 'b=AS:' + videoKbps);
-    return lines.join('\r\n');
-  });
-  return { type, sdp: sections.join('') };
+    const lines = section.split(/\r?\n/);
+    const [media, port, protocol, ...formats] = lines.shift().split(/\s+/);
+    const ids = lines.flatMap(line =>
+      /^a=rtpmap:(\d+) H264\/90000\s*$/i.exec(line)?.slice(1) || []);
+    const keep = formats.filter(id => ids.includes(id));
+    if (!keep.length || (port === '0' && !lines.includes('a=bundle-only'))) throw new Error(noH264);
+
+    const body = lines.filter(line => {
+      const attr = /^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)\b/i.exec(line);
+      return !/^b=AS:/i.test(line) && (!attr || keep.includes(attr[1]));
+    });
+    let i = 0;
+    while (/^[ic]=/.test(body[i])) i++;
+    body.splice(i, 0, 'b=AS:' + videoKbps);
+    return [[media, port, protocol, ...keep].join(' '), ...body].join('\r\n');
+  }).join('');
+}
+
+function preferH264(transceiver, capabilities) {
+  if (!transceiver.setCodecPreferences || !capabilities) return;
+  const codecs = capabilities.codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h264');
+  if (!codecs.length) throw new Error(noH264);
+  transceiver.setCodecPreferences(codecs);
+}
+
+async function setLocalH264(pc, description) {
+  const strict = { type: description.type, sdp: forceH264(description.sdp) };
+  try {
+    await pc.setLocalDescription(strict);
+  } catch (error) {
+    // Some engines require their unmodified local SDP. Signal only H.264 in either case.
+    if (strict.sdp === description.sdp) throw error;
+    await pc.setLocalDescription(description);
+  }
+  return { type: description.type, sdp: forceH264(pc.localDescription.sdp) };
 }
 
 let previewRequested = false;
@@ -161,16 +190,21 @@ async function offerTo(id) {
   const peer = createPeer(id, crypto.randomUUID());
   try {
     for (const track of localStream.getTracks()) {
-      const sender = peer.pc.addTrack(track, localStream);
-      if (track.kind === 'video') peer.videoSender = sender;
+      if (track.kind === 'video') {
+        const transceiver = peer.pc.addTransceiver(track, { direction: 'sendonly', streams: [localStream] });
+        preferH264(transceiver, RTCRtpSender.getCapabilities?.('video'));
+        peer.videoSender = transceiver.sender;
+      } else {
+        peer.pc.addTrack(track, localStream);
+      }
     }
-    await peer.pc.setLocalDescription(await peer.pc.createOffer());
+    const offer = await setLocalH264(peer.pc, await peer.pc.createOffer());
     if (peers.get(id) !== peer) return;
-    socket.emit('webrtc-offer', { to: id, session: peer.session, sdp: videoDescription(peer.pc) });
-  } catch {
+    socket.emit('webrtc-offer', { to: id, session: peer.session, sdp: offer });
+  } catch (error) {
     if (peers.get(id) === peer) {
       closePeer(id);
-      el('statusText').textContent = 'Viewer connection failed';
+      el('statusText').textContent = error.message === noH264 ? noH264 : 'Viewer connection failed';
     }
   }
 }
@@ -187,10 +221,18 @@ socket.on('webrtc-offer', async ({from, session, sdp}) => {
   };
   try {
     await setRemote(peer, sdp);
-    await peer.pc.setLocalDescription(await peer.pc.createAnswer());
-    socket.emit('webrtc-answer', { to: from, session, sdp: videoDescription(peer.pc) });
-  } catch {
-    if (peers.get(from) === peer) el('statusText').textContent = 'Connection failed';
+    for (const transceiver of peer.pc.getTransceivers()) {
+      if (transceiver.receiver.track.kind === 'video') {
+        preferH264(transceiver, RTCRtpReceiver.getCapabilities?.('video'));
+      }
+    }
+    const answer = await setLocalH264(peer.pc, await peer.pc.createAnswer());
+    socket.emit('webrtc-answer', { to: from, session, sdp: answer });
+  } catch (error) {
+    if (peers.get(from) === peer) {
+      closePeer(from);
+      el('statusText').textContent = error.message === noH264 ? noH264 : 'Connection failed';
+    }
   }
 });
 socket.on('webrtc-answer', async ({from, session, sdp}) => {
